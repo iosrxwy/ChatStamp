@@ -2,6 +2,8 @@
 
 Turn messy agent chat names into scannable `date | type | topic` titles.
 
+Open source: [github.com/iosrxwy/ChatStamp](https://github.com/iosrxwy/ChatStamp)　Twitter: [@iosrxwy](https://x.com/iosrxwy)　Telegram: [t.me/iosrxwy](https://t.me/iosrxwy/)
+
 [中文](README.md)
 
 Dark:

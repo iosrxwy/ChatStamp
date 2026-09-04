@@ -2,6 +2,8 @@
 
 把 Agent 侧栏里看不懂的对话名，整理成能扫的「日期｜类型｜主题」。
 
+开源：[github.com/iosrxwy/ChatStamp](https://github.com/iosrxwy/ChatStamp)　推特：[@iosrxwy](https://x.com/iosrxwy)　Telegram：[t.me/iosrxwy](https://t.me/iosrxwy/)
+
 [English](README.en.md)
 
 夜间：
