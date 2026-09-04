@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CHAT_STAMP_HOME/scripts/hook.py\" --host codex",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

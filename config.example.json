@@ -1,0 +1,15 @@
+{
+  "dateSource": "updated",
+  "timezone": "Asia/Shanghai",
+  "locale": "zh",
+  "titleLanguage": "user",
+  "titleFormat": "{mmdd}｜{type}｜{topic}",
+  "types": ["功能", "设计", "修复", "优化", "发布", "探索", "文档", "研究"],
+  "typesZh": ["功能", "设计", "修复", "优化", "发布", "探索", "文档", "研究"],
+  "typesEn": ["feat", "design", "fix", "perf", "release", "explore", "docs", "research"],
+  "emptyAction": "archive",
+  "emptyMaxBubbles": 1,
+  "emptyMaxBodyChars": 8,
+  "skipSubagents": true,
+  "titleOnly": true
+}

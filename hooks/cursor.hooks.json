@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "python3 \"${CHAT_STAMP_HOME}/scripts/hook.py\" --host cursor",
+        "timeout": 8
+      }
+    ]
+  }
+}
