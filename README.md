@@ -172,9 +172,9 @@ python3 ~/.local/share/ChatStamp/scripts/chat_stamp.py init --date-source create
 | `/au` | 全部对话 | 各条用自己的最后更新时间 |
 | `/ac` | 全部对话 | 各条用自己的创建时间 |
 
-斜杠菜单里的那句话跟 `locale` 走：中文用户看中文，`--locale en` 看英文。不要打长句。现成标题能看懂就套格式；看不懂只读 AI 回复里去掉代码后的总结。`/au` `/ac` 读 `~/.cursor/skills/chat-stamp/SKILL.md` 后批量处理。
+斜杠菜单里的那句话跟 `locale` 走：中文用户看中文，`--locale en` 看英文。不要打长句。现成标题能看懂就套格式；看不懂或语言不符，看用户消息和 AI 回复总结（去代码）。`/au` `/ac` 读 `~/.cursor/skills/chat-stamp/SKILL.md` 后批量处理。
 
-Cursor **stop hook 默认已开**：标题还不是规范格式时，注入一句 `/tu`（语言跟 locale：中文或英文）。不要 hook 用 `--no-hooks`。
+Cursor **stop hook 默认已开**：每条未格式化的对话最多跟一轮短 `/tu`（`rename_chat`）。现成标题能套格式时 followup 里直接带上成品标题；看不懂或语言不符时让模型看对话。Cursor 会同时跑 Claude 的 Stop，那种会跳过。不要 hook 用 `--no-hooks`。
 
 Codex 若已有自己的自动标题 hook，安装**不会**再插一条，避免重复。不覆盖 Orca / rtk 的 hooks。
 
@@ -188,7 +188,7 @@ python3 scripts/chat_stamp.py apply --map /tmp/map.json
 
 Cursor 当前窗口：先 `rename_chat`，再跑一次 `apply`，避免侧栏和点进去各显示一个名字。`apply` 直接写 Cursor 的 SQLite，建议 Cursor 空闲时执行。
 
-批量时 Agent 读安装路径下的 `SKILL.md`，`export` 会带 `titleClear`：为真就套现成标题，为假只看 `snippet` 里 AI 回复的总结（已去掉代码）。
+批量时 Agent 读安装路径下的 `SKILL.md`，`export` 会带 `titleClear`、`snippet`（AI 总结，已去代码）和 `userSnippet`（用户消息前若干条，去路径/去代码，≤400 字）。Cursor 的 FTS 正文无法区分角色，所以 `userSnippet` 可能含双方文本。
 
 `locale=zh` 类型：功能、设计、修复、优化、发布、探索、文档、研究。
 
@@ -239,8 +239,8 @@ Hook 条目需要你自己从 `hooks.json` / `settings.json` 里删。仓库目�
 
 会把 hook 片段**合并进**现有配置，不覆盖其它条目：
 
-- **Cursor**：`~/.cursor/hooks.json` 的 `stop`。当前标题还不是规范格式时，注入一句 `/tu`，只改**当前**这一条。
-- **Claude Code**：`~/.claude` 存在时合并到 `~/.claude/settings.json` 的 `Stop`，返回 `decision: block` 让 Claude 再跑一轮 `/tu`。同一会话只触发一次。
+- **Cursor**：`~/.cursor/hooks.json` 的 `stop`。一条短 followup + `rename_chat`，每个会话最多一次。单独写 SQLite 改不了当前侧栏。
+- **Claude Code**：`~/.claude` 存在时合并 `Stop`。若 id 是 Cursor 对话则跳过；否则能套格式就写 overrides，不能就一次 `block`。
 - **Codex**：`SessionEnd` 太短，只记下 id，标题仍由 skill 来写；脚本不改 `~/.codex/hooks.json`。
 
 详见 [hooks/README.md](hooks/README.md)。

@@ -13,4 +13,8 @@ Rules: `~/.cursor/skills/chat-stamp/SKILL.md`
 python3 ~/.cursor/skills/chat-stamp/scripts/chat_stamp.py export --host auto --date-source created --out /tmp/chat-stamp-export.json
 ```
 
-If `titleClear` is true, wrap the existing title. If false, use the assistant wrap-up in `snippet` (code already stripped). One locale for the batch.
+1. If `titleClear` is true and the language matches locale, wrap the existing title.
+2. If unclear or the wrong language, use `userSnippet` (user messages) plus `snippet` (assistant wrap-up, code already stripped).
+3. If still unclear, keep the original title.
+
+One locale for the batch. Do not mix languages.

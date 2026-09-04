@@ -13,4 +13,8 @@ description: 整理全部对话的标题。每条日期用该对话的创建时�
 python3 ~/.cursor/skills/chat-stamp/scripts/chat_stamp.py export --host auto --date-source created --out /tmp/chat-stamp-export.json
 ```
 
-`titleClear` 为真：套现成标题。为假：只看 `snippet` 里 AI 回复的总结（已去掉代码）。同一 locale。
+1. `titleClear` 为真且语言符合 locale：只套现成标题。
+2. 看不懂或语言不符：看 `userSnippet`（用户消息）和 `snippet`（AI 总结，已去代码）。
+3. 还是看不懂：保留原名。
+
+同一 locale，不要中英混排。

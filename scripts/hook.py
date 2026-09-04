@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Optional Stop / SessionEnd hook. Does not invent titles."""
+"""Stop / SessionEnd hook: silent wrap when possible, else one followup."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ONCE = Path.home() / ".config" / "chat-stamp" / "once"
 
@@ -21,7 +23,7 @@ def stdin_json() -> dict:
         return {}
 
 
-def session_id(event: dict) -> str:
+def _id_from_mapping(obj: dict) -> str:
     for key in (
         "conversation_id",
         "conversationId",
@@ -29,9 +31,24 @@ def session_id(event: dict) -> str:
         "sessionId",
         "thread_id",
         "composerId",
+        "composer_id",
     ):
-        if event.get(key):
-            return str(event[key])
+        val = obj.get(key)
+        if val:
+            return str(val)
+    return ""
+
+
+def session_id(event: dict) -> str:
+    found = _id_from_mapping(event)
+    if found:
+        return found
+    for nest in ("conversation", "input", "session", "composer", "data"):
+        obj = event.get(nest)
+        if isinstance(obj, dict):
+            found = _id_from_mapping(obj)
+            if found:
+                return found
     return os.environ.get("CURSOR_CONVERSATION_ID") or os.environ.get("CODEX_THREAD_ID") or ""
 
 
@@ -42,85 +59,154 @@ def load_ct():
     return ct
 
 
-def followup(locale: str) -> str:
+def looks_like_cursor_event(event: dict) -> bool:
+    """Cursor stop also runs ~/.claude Stop hooks; skip those so we do not double-fire."""
+    has_cursor = bool(event.get("conversation_id") or event.get("conversationId") or event.get("composerId"))
+    has_claude = bool(
+        event.get("session_id")
+        or event.get("sessionId")
+        or event.get("hook_event_name")
+        or event.get("transcript_path")
+    )
+    return has_cursor and not has_claude
+
+
+def followup_text(locale: str, host: str = "cursor", ready_title: str = "") -> str:
+    """Cursor expands the leading /tu into the full command rules; keep it short."""
+    if ready_title:
+        if host == "claude":
+            if locale == "en":
+                return (
+                    f"Apply title {ready_title!r} for this session with "
+                    "scripts/chat_stamp.py apply --host claude. Title only."
+                )
+            return (
+                f"把本会话标题写成「{ready_title}」，"
+                "用 scripts/chat_stamp.py apply --host claude 写入。只改标题。"
+            )
+        if locale == "en":
+            return f"/tu rename_chat to {ready_title!r} only. Title only."
+        return f"/tu 直接 rename_chat 为「{ready_title}」。只改标题。"
+    if host == "claude":
+        if locale == "en":
+            return (
+                "Use the chat-stamp skill for this session only: read my messages and your "
+                "wrap-up (strip code), write MMDD | type | topic in English, then apply it "
+                "with scripts/chat_stamp.py apply --host claude. Title only."
+            )
+        return (
+            "用 chat-stamp skill 只给本会话起标题：看我发的消息和你的回复总结（去掉代码），"
+            "用中文写成 MMDD｜类型｜主题，再用 scripts/chat_stamp.py apply --host claude 写入。只改标题。"
+        )
     if locale == "en":
         return (
-            "/tu Rename this chat only. If the current title already names the work, "
-            "wrap it as MMDD | type | topic using last-updated time. "
-            "If the title is a placeholder, use the assistant wrap-up only "
-            "(strip code, do not re-analyze the task). "
-            "Then rename_chat. Title only."
+            "/tu Read my messages and your wrap-up (strip code). "
+            "Write MMDD | type | topic in English, then rename_chat."
         )
-    return (
-        "/tu 只改当前标题。现成标题已能看出主题就套成 MMDD｜类型｜主题（日期用最后更新）并 rename_chat；"
-        "标题看不出来只看 AI 回复里去掉代码后的总结，不要自己再分析任务或代码；还看不懂就保留原名。只改标题。"
-    )
+    return "/tu 看我发的消息和你的回复总结（去掉代码），用中文写成 MMDD｜类型｜主题并 rename_chat。"
 
 
-def already_formatted(host: str, sid: str, locale: str) -> bool:
-    if not sid:
+LOG = Path.home() / ".config" / "chat-stamp" / "hook.log"
+
+
+def log(msg: str) -> None:
+    """One line per stop; file is capped so it never grows unbounded."""
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        if LOG.exists() and LOG.stat().st_size > 200_000:
+            LOG.write_text("")
+        with LOG.open("a") as fh:
+            fh.write(f"{datetime.now().isoformat(timespec='seconds')} {msg}\n")
+    except OSError:
+        pass
+
+
+def once_path(host: str, sid: str) -> Path:
+    return ONCE / f"{host}-{sid}"
+
+
+def mark_once(host: str, sid: str) -> bool:
+    try:
+        ONCE.mkdir(parents=True, exist_ok=True)
+        once_path(host, sid).write_text("1\n")
+        return True
+    except OSError:
         return False
+
+
+def record_codex(sid: str) -> None:
+    try:
+        ONCE.mkdir(parents=True, exist_ok=True)
+        pending = Path.home() / ".config" / "chat-stamp" / "pending.jsonl"
+        with pending.open("a") as fh:
+            fh.write(json.dumps({"host": "codex", "id": sid}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def handle(host: str, event: dict) -> dict:
+    sid = session_id(event)
+    if host == "codex":
+        record_codex(sid)
+        return {}
+    if host == "claude":
+        # Cursor stop also executes ~/.claude Stop hooks with the same composer id.
+        in_cursor = False
+        try:
+            in_cursor = bool(sid) and bool(load_ct().cursor_current_title(sid))
+        except Exception:
+            in_cursor = False
+        if looks_like_cursor_event(event) or in_cursor:
+            log(f"claude noop cursor-event sid={sid} keys={sorted(event.keys())}")
+            return {}
+    if not sid:
+        log(f"{host} noop no-id keys={sorted(event.keys())}")
+        return {}
+    if event.get("stop_hook_active"):
+        return {}
+    if once_path(host, sid).exists():
+        log(f"{host} {sid} noop once")
+        return {}
     try:
         ct = load_ct()
+        cfg = ct.load_config()
+        locale = ct.locale_of(cfg)
         if host in ("cursor", "grok"):
-            return ct.is_formatted(ct.cursor_current_title(sid), locale)
-    except Exception:
-        return False
-    return False
+            title, day = ct.cursor_title_and_mmdd(sid, cfg)
+        elif host == "claude":
+            title = ct.claude_current_title(sid)
+            day = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%m%d")
+        else:
+            return {}
+        action, new_title = ct.decide(title, locale, day, sid)
+        if action == "silent" and host == "claude" and new_title:
+            written = ct.silent_stamp_claude(sid)
+            log(f"{host} {sid} silent {title!r} -> {written!r}")
+            return {}
+        if action in ("silent", "followup"):
+            # Cursor keeps the live title in memory; writing SQLite is overwritten
+            # on stop. The only durable path is one model turn + rename_chat.
+            if not mark_once(host, sid):
+                return {}
+            ready = new_title if action == "silent" else ""
+            log(f"{host} {sid} followup {title!r} ready={ready!r}")
+            text = followup_text(locale, host, ready)
+            if host == "claude":
+                return {"decision": "block", "reason": text}
+            return {"followup_message": text}
+        log(f"{host} {sid} noop {title!r}")
+    except Exception as exc:  # never break the host
+        log(f"{host} {sid} error {exc!r}")
+        return {}
+    return {}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="cursor")
     args = parser.parse_args()
-    event = stdin_json()
-    sid = session_id(event)
-    try:
-        ct = load_ct()
-        locale = ct.locale_of(ct.load_config())
-    except Exception:
-        locale = "zh"
-    try:
-        ONCE.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        print("{}")
-        return
-    marker = ONCE / f"{args.host}-{sid or 'unknown'}"
-    if marker.exists() or event.get("stop_hook_active"):
-        print("{}")
-        return
-    if already_formatted(args.host, sid, locale):
-        print("{}")
-        return
-    try:
-        marker.write_text("1\n")
-    except OSError:
-        print("{}")
-        return
-    if args.host == "codex":
-        pending = Path.home() / ".config" / "chat-stamp" / "pending.jsonl"
-        try:
-            pending.parent.mkdir(parents=True, exist_ok=True)
-            with pending.open("a") as fh:
-                fh.write(json.dumps({"host": "codex", "id": sid}, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
-        print("{}")
-        return
-    if args.host == "claude":
-        # Claude Code Stop hook: "block" keeps the turn going with `reason`
-        # as the next instruction. stop_hook_active means we already did.
-        if event.get("stop_hook_active"):
-            print("{}")
-            return
-        print(
-            json.dumps(
-                {"decision": "block", "reason": followup(locale)},
-                ensure_ascii=False,
-            )
-        )
-        return
-    print(json.dumps({"followup_message": followup(locale)}, ensure_ascii=False))
+    result = handle(args.host, stdin_json())
+    print(json.dumps(result, ensure_ascii=False) if result else "{}")
 
 
 if __name__ == "__main__":

@@ -10,10 +10,10 @@ Rename **this chat only**. `MMDD` comes from this chat's **last-updated** time (
 Then `rename_chat`:
 
 1. If the current title already names the work, only wrap `MMDD | type | topic`.
-2. If the title is unclear, use the **assistant wrap-up only**. Strip code and patches. Do not re-analyze the task.
+2. If the title is unclear or the wrong language, read my messages and your wrap-up. Strip code and patches.
 3. If it is still unclear, keep the original title.
 
 Types: feat, design, fix, perf, release, explore, docs, research.  
-English user → English topic. Title only.
+English user → English topic. Do not mix languages. Title only.
 
 Unclear titles look like: `Untitled`, `New Chat`, `TODO asdf`, `panic`, `npm ERR`, file paths, raw git commands.

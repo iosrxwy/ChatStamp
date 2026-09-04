@@ -2,14 +2,15 @@
 name: chat-stamp
 description: >-
   Renames local agent chats to MMDD｜类型｜主题 (zh) or MMDD | type | topic (en).
-  Prefers an existing clear title; otherwise uses the assistant wrap-up with
-  code stripped. Use when the user types /tu /tc /au /ac, /chat-stamp,
-  or asks to organize sidebar titles / 对话重命名.
+  Prefers an existing clear title and only wraps the format. If the title
+  is unclear or the wrong language, uses the user's messages plus the
+  assistant wrap-up (code stripped). Use when the user types /tu /tc /au /ac,
+  /chat-stamp, or asks to organize sidebar titles / 对话重命名.
 argument-hint: /tu /tc /au /ac
 license: MIT
 metadata:
   author: iosrxwy
-  version: "1.4.0"
+  version: "1.5.0"
 ---
 
 # ChatStamp
@@ -33,12 +34,12 @@ Portable Agent Skill. Humans install from [README.md](README.md).
 
 ## How to pick a title
 
-1. If the **current title** already names the work, keep that topic. Only wrap `MMDD｜类型｜`.
-2. If the title is a placeholder (`Untitled`, `New Chat`, `panic`, `npm ERR`, a path, a raw git line, `TODO asdf`), read only the **assistant wrap-up** (结论 / 已改成 / Summary). Strip code fences and patches. Do not re-analyze the user task or the diff.
+1. If the **current title** already names the work and matches the locale, keep that topic. Only wrap `MMDD｜类型｜` (or the English form).
+2. If the title is unclear, empty, or the wrong language (e.g. English title when `locale=zh`), read the **user messages** and the **assistant wrap-up** (结论 / 已改成 / Summary). Strip code fences and patches.
 3. If the theme is still unclear, keep the original title. Do not use another model.
 
 Chinese user / `locale=zh` → Chinese type and topic, even when the body is English.  
-`locale=en` → English type and topic.
+`locale=en` → English type and topic. Never mix the two.
 
 Types (`zh`): 功能、设计、修复、优化、发布、探索、文档、研究.  
 Types (`en`): feat, design, fix, perf, release, explore, docs, research.
@@ -47,8 +48,8 @@ Types (`en`): feat, design, fix, perf, release, explore, docs, research.
 现成标题：优化批次文字显示
 结果：0903｜优化｜批次文字显示
 
-现成标题：Untitled-1    正文：fix the inject crash
-结果：0904｜修复｜注入闪退
+现成标题：Untitled-1 / ImgPlayCrack analysis
+看用户消息 + AI 总结（去代码）后再 rename_chat
 ```
 
 Title only. Do not change project, messages, pin, sort, or workspace.
@@ -69,7 +70,7 @@ python3 ~/.cursor/skills/chat-stamp/scripts/chat_stamp.py apply --map /tmp/chat-
 python3 ~/.cursor/skills/chat-stamp/scripts/chat_stamp.py archive-empty --host auto
 ```
 
-Export sets `titleClear`. When true, format the existing title. When false, `snippet` is already the assistant wrap-up with code removed.  
+Export sets `titleClear`, `snippet` (assistant wrap-up, code stripped), and `userSnippet` (leading user text, paths/code stripped, ≤400). Cursor FTS `body` has no role markers, so `userSnippet` may include both sides. When `titleClear` is true, wrap the existing title. When false or the language does not match locale, use `userSnippet` plus `snippet`.  
 Map: `[{"id":"<id>","title":"0904｜修复｜注入闪退"}]`
 
 Current Cursor chat: `rename_chat`, then `apply` for that id so the composer store matches the sidebar.
@@ -90,7 +91,7 @@ More type tables: [references/title-rules.md](references/title-rules.md).
 
 ## Hook
 
-`scripts/install.sh` merges a Cursor `stop` hook. It does not invent titles. If the current title is not formatted, it starts one `/tu` turn. Codex SessionEnd only records an id. Existing Orca/rtk hooks are left as they are.
+`scripts/install.sh` merges a Cursor `stop` hook and a Claude `Stop` hook. Cursor cannot silently rename the live sidebar; the hook sends one short followup so the model can `rename_chat` (the finished title is included when the current name already wraps). Cursor also runs Claude Stop hooks; those are skipped when the id is a Cursor composer. Each conversation is followed up at most once (`~/.config/chat-stamp/once/{host}-{id}`). Codex SessionEnd only records an id. Existing Orca/rtk hooks are left as they are.
 
 ## Safety
 

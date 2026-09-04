@@ -2,8 +2,8 @@
 
 Decide in this order:
 
-1. If the **current title** already names the work, keep that topic. Only wrap `MMDD｜类型｜` (or the English form).
-2. If the title is a placeholder (`Untitled`, `New Chat`, `panic`, `npm ERR`, a path, a raw git line, `TODO asdf`), read only the **assistant wrap-up**. Strip code. Do not re-analyze the task or the patch.
+1. If the **current title** already names the work and matches the locale, keep that topic. Only wrap `MMDD｜类型｜` (or the English form).
+2. If the title is unclear, empty, or the wrong language (e.g. English title when `locale=zh`), read the **user messages** and the **assistant wrap-up**. Strip code. Do not mix Chinese and English in one title.
 3. If the theme is still unclear, keep the original title.
 
 Write the title in the **user locale**. Do not transliterate an English sidebar title, and do not keep English when `locale=zh`.
@@ -19,7 +19,7 @@ Write the title in the **user locale**. Do not transliterate an English sidebar 
 
 - Chinese user / Chinese output → `zh`. Every title is Chinese, including chats whose messages are English.
 - English titles only when the user set `locale=en`.
-- Do not detect language from `snippet`.
+- Do not detect language from `snippet` or `userSnippet`.
 - Unclear theme → keep the original title. Same model, more context if needed. No second model.
 
 ## Date
@@ -57,13 +57,13 @@ Pick exactly one:
 | docs | Rules, indexes, knowledge, comments-as-docs |
 | research | IDA, dSYM, protocol, comparison |
 
-If the title already starts with a type word **in the user locale**, keep that type.
+If the title already starts with a type word **in the user locale**, keep that type. English type words must be whole words (`design tools` yes, `designer tools` no).
 
 ## Topic
 
 - `zh`: 2–16 Chinese characters when possible. Topic must be Chinese. Short Latin tokens (IDA, dSYM, Hook, JSON) may stay inside a Chinese phrase.
 - `en`: 3–6 words. Topic must be English.
-- Prefer the existing title when `titleClear` is true. Otherwise use the assistant wrap-up in `snippet` (code already stripped).
+- Prefer the existing title when `titleClear` is true and the language matches locale. Otherwise use `userSnippet` (user messages) plus `snippet` (assistant wrap-up, code already stripped). Cursor FTS `body` has no role markers, so `userSnippet` may include both sides.
 - Strip project names (`WCRefine`, `WeChat` as a prefix, repo folder names).
 - Drop paths, `.ips`, crash filenames, wxids, URLs.
 - Questions like “什么原因闪退” with no feature → `崩溃日志` only when the user actually attached a crash / asked to analyze a crash.

@@ -117,16 +117,26 @@ data = {"version": 1, "hooks": {}}
 if path.exists():
     data = json.loads(path.read_text())
 stops = data.setdefault("hooks", {}).setdefault("stop", [])
-if not any("chat-stamp" in x.get("command", "") or (
-    "hook.py" in x.get("command", "") and "--host cursor" in x.get("command", "")
-) for x in stops if isinstance(x, dict)):
+updated = False
+for item in stops:
+    if not isinstance(item, dict):
+        continue
+    old = item.get("command", "")
+    if "hook.py" in old and "--host cursor" in old and old != cmd:
+        item["command"] = cmd
+        updated = True
+if updated:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    print(f"updated stop hook path -> {path}")
+elif not any("hook.py" in x.get("command", "") and "--host cursor" in x.get("command", "")
+             for x in stops if isinstance(x, dict)):
     stops.append({"command": cmd, "timeout": 8})
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     print(f"merged stop hook -> {path}")
 else:
     print(f"stop hook already present -> {path}")
 
-# Claude Code: Stop hook returns {"decision":"block","reason":"/tu ..."}.
+# Claude Code: two-phase Stop hook (silent wrap, else one block followup).
 claude_dir = Path.home() / ".claude"
 if claude_dir.is_dir():
     spath = claude_dir / "settings.json"
@@ -141,12 +151,25 @@ if claude_dir.is_dir():
     else:
         ccmd = f'python3 "{root}/scripts/hook.py" --host claude'
         stop = settings.setdefault("hooks", {}).setdefault("Stop", [])
-        present = any(
-            "chat-stamp" in h.get("command", "") or "hook.py" in h.get("command", "")
-            for group in stop if isinstance(group, dict)
-            for h in group.get("hooks", []) if isinstance(h, dict)
-        )
-        if not present:
+        present = False
+        changed = False
+        for group in stop:
+            if not isinstance(group, dict):
+                continue
+            for h in group.get("hooks", []) if isinstance(group.get("hooks"), list) else []:
+                if not isinstance(h, dict):
+                    continue
+                old = h.get("command", "")
+                if "hook.py" not in old:
+                    continue
+                present = True
+                if old != ccmd:
+                    h["command"] = ccmd
+                    changed = True
+        if changed:
+            spath.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
+            print(f"updated Stop hook path -> {spath}")
+        elif not present:
             stop.append({"hooks": [{"type": "command", "command": ccmd, "timeout": 8}]})
             spath.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n")
             print(f"merged Stop hook -> {spath}")
@@ -157,5 +180,5 @@ PY
 fi
 
 echo "dateSource=$DATE_SOURCE locale=$LOCALE timezone=$TZ_NAME"
-echo "auto: hook on stop -> /tu. manual: /tu /tc /au /ac"
+echo "auto: hook sends one short /tu followup (rename_chat). manual: /tu /tc /au /ac"
 echo "done"

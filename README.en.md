@@ -71,7 +71,7 @@ Pick it at install, say it to the agent once, or run `init` again. All three wri
 
 ## Manual trigger (when it does not run by itself)
 
-The Cursor `stop` hook (on by default) only renames the **current** chat when its title is not yet formatted. If you installed with `--no-hooks`, or want to rename other chats, trigger it yourself:
+The Cursor `stop` hook (on by default) sends one short `/tu` followup so the model can `rename_chat`. Writing SQLite alone does not update the live sidebar. If you installed with `--no-hooks`, or want to rename other chats, trigger it yourself:
 
 Short slash tokens (do not type a long sentence):
 
@@ -92,9 +92,9 @@ python3 scripts/chat_stamp.py apply --map /tmp/map.json
 
 Cursor current window: call `rename_chat`, then `apply`, so the sidebar and the opened composer stay in sync. `apply` writes Cursor's SQLite directly; run it while Cursor is idle.
 
-`--locale en` installs English slash-menu hints (`/tu` = this chat, last updated; `/au` = all chats, last updated). The Cursor stop hook is on by default and injects that same English `/tu` when the title is not formatted. Pass `--no-hooks` to skip.
+`--locale en` installs English slash-menu hints (`/tu` = this chat, last updated; `/au` = all chats, last updated). The Cursor stop hook is on by default and sends one short followup per unformatted chat. Pass `--no-hooks` to skip.
 
-If the existing title is clear, wrap it. If not, read only the assistant wrap-up with code removed. `/au` `/ac` read `~/.cursor/skills/chat-stamp/SKILL.md` and batch-apply. Export includes `titleClear`.
+If the existing title is clear, wrap it. If not, or if the language does not match locale, read the user messages plus the assistant wrap-up with code removed. `/au` `/ac` read `~/.cursor/skills/chat-stamp/SKILL.md` and batch-apply. Export includes `titleClear`, `snippet`, and `userSnippet`. Cursor FTS `body` has no role markers, so `userSnippet` may include both sides.
 
 `locale=en` types: feat, design, fix, perf, release, explore, docs, research.
 
@@ -111,8 +111,8 @@ If the theme is unclear, keep the original title. Empty chats are archived. Titl
 
 Merges into existing config without replacing other entries:
 
-- **Cursor**: `stop` in `~/.cursor/hooks.json`. If the current title is not formatted, one `/tu` follow-up renames **this** chat.
-- **Claude Code**: when `~/.claude` exists, `Stop` in `~/.claude/settings.json`. The hook returns `decision: block` so Claude runs one more `/tu` turn. Once per session.
+- **Cursor**: `stop` in `~/.cursor/hooks.json`. One short followup + `rename_chat`, at most once. SQLite writes do not stick on the live sidebar.
+- **Claude Code**: when `~/.claude` exists, `Stop` in `~/.claude/settings.json`. Skipped when the id is a Cursor composer. Otherwise silent wrap or one `block`.
 - **Codex**: `SessionEnd` is too short; it only records the id. `~/.codex/hooks.json` is not touched.
 
 See [hooks/README.md](hooks/README.md).

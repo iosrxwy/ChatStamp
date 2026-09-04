@@ -33,6 +33,9 @@ DEFAULT_CONFIG = {
     "titleOnly": True,
 }
 
+SQLITE_WRITE_TIMEOUT = 2.0
+_EN_TYPE_BOUNDARY = frozenset(" \t:|-｜")
+
 _TYPE_ALT = "|".join(TYPES_ZH + TYPES_EN)
 TITLE_RE = re.compile(
     rf"^(\d{{4}})\s*[|｜]\s*({_TYPE_ALT})\s*[|｜]\s*(.+)$"
@@ -137,6 +140,7 @@ def finalize_export_item(item: dict) -> dict:
     item["title"] = title
     item["formatted"] = is_formatted(title, locale)
     item["titleClear"] = title_is_clear(title)
+    item["userSnippet"] = (item.get("userSnippet") or "")[:400]
     return item
 
 
@@ -241,7 +245,7 @@ def cursor_export(cfg: dict) -> list[dict]:
     if search_path.exists():
         search = sqlite3.connect(f"file:{search_path}?mode=ro", uri=True)
         for cid, body in search.execute(
-            "SELECT c.id, substr(f.body,1,800) FROM conversations c "
+            "SELECT c.id, substr(f.body,1,1600) FROM conversations c "
             "LEFT JOIN conversation_fts f ON f.rowid=c.fts_rowid"
         ):
             bodies[cid] = body or ""
@@ -277,6 +281,7 @@ def cursor_export(cfg: dict) -> list[dict]:
                     "locale": locale,
                     "mmdd": mmdd(src, cfg["timezone"]),
                     "snippet": assistant_summary_snippet(bodies.get(cid) or ""),
+                    "userSnippet": user_snippet_from_text(bodies.get(cid) or "", 400),
                 }
             )
         )
@@ -286,53 +291,68 @@ def cursor_export(cfg: dict) -> list[dict]:
 
 def cursor_apply(items: list[dict]) -> int:
     state_path, search_path = cursor_paths()
-    state = sqlite3.connect(str(state_path), timeout=60)
-    search = sqlite3.connect(str(search_path), timeout=60) if search_path.exists() else None
-    n = 0
-    for item in items:
-        cid, title = item["id"], item["title"]
-        row = state.execute("SELECT value FROM composerHeaders WHERE composerId=?", (cid,)).fetchone()
-        if not row:
-            continue
-        val = json.loads(row[0])
-        if val.get("name") != title:
-            val["name"] = title
-            state.execute(
-                "UPDATE composerHeaders SET value=? WHERE composerId=?",
-                (json.dumps(val, ensure_ascii=False), cid),
-            )
-        key = f"composerData:{cid}"
-        drow = state.execute("SELECT value FROM cursorDiskKV WHERE key=?", (key,)).fetchone()
-        if drow:
-            raw = drow[0]
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8")
-            data = json.loads(raw)
-            if isinstance(data, dict) and data.get("name") != title:
-                data["name"] = title
-                state.execute(
-                    "UPDATE cursorDiskKV SET value=? WHERE key=?",
-                    (json.dumps(data, ensure_ascii=False), key),
-                )
-        if search:
-            srow = search.execute(
-                "SELECT fts_rowid, title FROM conversations WHERE id=?", (cid,)
+    state = None
+    search = None
+    try:
+        state = sqlite3.connect(str(state_path), timeout=SQLITE_WRITE_TIMEOUT)
+        search = (
+            sqlite3.connect(str(search_path), timeout=SQLITE_WRITE_TIMEOUT)
+            if search_path.exists()
+            else None
+        )
+        n = 0
+        for item in items:
+            cid, title = item["id"], item["title"]
+            row = state.execute(
+                "SELECT value FROM composerHeaders WHERE composerId=?", (cid,)
             ).fetchone()
-            if srow and srow[1] != title:
-                search.execute("UPDATE conversations SET title=? WHERE id=?", (title, cid))
-                try:
-                    search.execute(
-                        "UPDATE conversation_fts SET title=? WHERE rowid=?", (title, srow[0])
+            if not row:
+                continue
+            val = json.loads(row[0])
+            if val.get("name") != title:
+                val["name"] = title
+                state.execute(
+                    "UPDATE composerHeaders SET value=? WHERE composerId=?",
+                    (json.dumps(val, ensure_ascii=False), cid),
+                )
+            key = f"composerData:{cid}"
+            drow = state.execute("SELECT value FROM cursorDiskKV WHERE key=?", (key,)).fetchone()
+            if drow:
+                raw = drow[0]
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8")
+                data = json.loads(raw)
+                if isinstance(data, dict) and data.get("name") != title:
+                    data["name"] = title
+                    state.execute(
+                        "UPDATE cursorDiskKV SET value=? WHERE key=?",
+                        (json.dumps(data, ensure_ascii=False), key),
                     )
-                except sqlite3.OperationalError:
-                    pass
-        n += 1
-    state.commit()
-    if search:
-        search.commit()
-        search.close()
-    state.close()
-    return n
+            if search:
+                srow = search.execute(
+                    "SELECT fts_rowid, title FROM conversations WHERE id=?", (cid,)
+                ).fetchone()
+                if srow and srow[1] != title:
+                    search.execute("UPDATE conversations SET title=? WHERE id=?", (title, cid))
+                    try:
+                        search.execute(
+                            "UPDATE conversation_fts SET title=? WHERE rowid=?",
+                            (title, srow[0]),
+                        )
+                    except sqlite3.OperationalError:
+                        pass
+            n += 1
+        state.commit()
+        if search:
+            search.commit()
+        return n
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        if search is not None:
+            search.close()
+        if state is not None:
+            state.close()
 
 
 def cursor_archive_empty(cfg: dict) -> int:
@@ -393,6 +413,135 @@ def cursor_current_title(composer_id: str) -> str:
     ).fetchone()
     con.close()
     return (row[0] or "") if row else ""
+
+
+def _hint_in(text: str, key: str) -> bool:
+    if re.search(r"[\u4e00-\u9fff]", key):
+        return key in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(key)}(?![a-z0-9])", text, re.I) is not None
+
+
+def guess_type(text: str, locale: str) -> str:
+    low = (text or "").lower()
+    rules = (
+        ("修复", "fix", ("修复", "闪退", "崩溃", "报错", "bug", "crash", "fix", "hotfix")),
+        ("优化", "perf", ("优化", "卡顿", "性能", "jank", "slow", "perf", "lag")),
+        ("发布", "release", ("发布", "打包", "上传", "release", "ipa")),
+        ("设计", "design", ("设计", "圆角", "布局", "配色", "layout", "design")),
+        ("文档", "docs", ("文档", "规则", "readme", "索引", "docs")),
+        ("研究", "research", ("研究", "逆向", "ida", "dsym", "协议", "reverse")),
+        ("功能", "feat", ("功能", "新增", "添加", "开关", "feat", "feature")),
+    )
+    for zh, en, keys in rules:
+        if any(_hint_in(low, key) for key in keys):
+            return en if locale == "en" else zh
+    return "explore" if locale == "en" else "探索"
+
+
+def _strip_leading_type(topic: str, locale: str) -> tuple[str, str | None]:
+    """Chinese types: prefix. English types: whole word before space/: / | / - or end."""
+    if locale == "en":
+        low = topic.lower()
+        for cand in TYPES_EN:
+            if not low.startswith(cand):
+                continue
+            n = len(cand)
+            if len(topic) == n:
+                return topic, None
+            if topic[n] in _EN_TYPE_BOUNDARY:
+                rest = topic[n:].lstrip(" \t：:|-｜")
+                if rest:
+                    return rest, cand
+        return topic, None
+    for cand in TYPES_ZH:
+        if topic.startswith(cand):
+            rest = topic[len(cand) :].lstrip(" \t：:|-｜")
+            if rest:
+                return rest, cand
+    return topic, None
+
+
+def wrap_clear_title(title: str, mmdd_s: str, locale: str) -> str | None:
+    """Stamp a clear sidebar title. Does not invent a topic from the body."""
+    text = (title or "").strip()
+    if not text or not mmdd_s or not re.fullmatch(r"\d{4}", mmdd_s):
+        return None
+    if TITLE_RE.match(text) or is_formatted(text, locale):
+        return None
+    if not title_is_clear(text):
+        return None
+    typ = guess_type(text, locale)
+    topic, stripped = _strip_leading_type(text, locale)
+    if stripped:
+        typ = stripped
+    built = f"{mmdd_s}{sep_for(locale)}{typ}{sep_for(locale)}{topic}"
+    ok, _ = title_ok_for_locale(built, locale)
+    return built if ok else None
+
+
+def decide(
+    title: str,
+    locale: str,
+    mmdd_s: str,
+    conversation_id: str = "",
+) -> tuple[str, str | None]:
+    """Hook policy: noop / silent wrap / one model followup."""
+    if not (conversation_id or "").strip():
+        return "noop", None
+    text = (title or "").strip()
+    if is_formatted(text, locale):
+        return "noop", None
+    built = wrap_clear_title(text, mmdd_s, locale)
+    if built:
+        return "silent", built
+    return "followup", None
+
+
+def cursor_title_and_mmdd(composer_id: str, cfg: dict | None = None) -> tuple[str, str]:
+    cfg = cfg or load_config()
+    day = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%m%d")
+    sid = (composer_id or "").strip()
+    if not sid:
+        return "", day
+    state_path, _ = cursor_paths()
+    if not state_path.exists():
+        return "", day
+    con = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True, timeout=SQLITE_WRITE_TIMEOUT)
+    try:
+        row = con.execute(
+            "SELECT createdAt, lastUpdatedAt, value FROM composerHeaders WHERE composerId=?",
+            (sid,),
+        ).fetchone()
+    finally:
+        con.close()
+    if not row:
+        return "", day
+    created, updated, raw = row
+    try:
+        val = json.loads(raw) if raw else {}
+    except Exception:
+        val = {}
+    title = (val.get("name") or "").strip()
+    src = created if cfg.get("dateSource") == "created" else (
+        updated or val.get("lastUpdatedAt") or created
+    )
+    return title, (mmdd(src, cfg["timezone"]) or day)
+
+
+def silent_stamp_cursor(composer_id: str) -> str | None:
+    """Write a stamped title into Cursor stores. No agent follow-up."""
+    sid = (composer_id or "").strip()
+    if not sid:
+        return None
+    cfg = load_config()
+    locale = locale_of(cfg)
+    title, day = cursor_title_and_mmdd(sid, cfg)
+    new_title = wrap_clear_title(title, day, locale)
+    if not new_title:
+        return None
+    if not cursor_apply([{"id": sid, "title": new_title}]):
+        return None
+    return new_title
 
 
 # --- Codex ------------------------------------------------------------------
@@ -477,6 +626,36 @@ def assistant_summary_snippet(text: str, limit: int = 800) -> str:
     return _join_snippet(paras[-3:], limit)
 
 
+_PATH_RE = re.compile(
+    r"(?:"
+    r"[A-Za-z]:\\[^\s]+"
+    r"|/(?:Users|home|opt|var|tmp|private|usr)/[^\s]+"
+    r"|~/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+"
+    r"|(?:\./|\.\./)[A-Za-z0-9._/-]+"
+    r")"
+)
+
+
+def strip_paths(text: str) -> str:
+    return _PATH_RE.sub(" ", text or "")
+
+
+def user_snippet_from_text(text: str, limit: int = 400) -> str:
+    """Leading prose for batch titles. Strips code and filesystem paths."""
+    cleaned = strip_paths(strip_code_blocks(text or ""))
+    lines = []
+    used = 0
+    for ln in cleaned.splitlines():
+        s = ln.strip()
+        if not s or _looks_like_code_line(s):
+            continue
+        lines.append(s)
+        used += len(s)
+        if used >= limit:
+            break
+    return re.sub(r"\s+", " ", " ".join(lines)).strip()[:limit]
+
+
 def _clip_snippet_part(text: str, limit: int = 240) -> str:
     cleaned = assistant_summary_snippet(text, limit)
     if not cleaned or "<command-" in cleaned:
@@ -498,32 +677,46 @@ def _join_snippet(parts: list[str], limit: int = 800) -> str:
     return "\n".join(out)
 
 
-def _codex_snippet(session_id: str) -> str:
+def _codex_line_texts(
+    session_id: str, markers: tuple[str, ...], limit: int, clip: str = "assistant"
+) -> str:
     root = Path(os.environ.get("CODEX_HOME", HOME / ".codex")) / "sessions"
-    if not root.exists():
+    if not root.exists() or not session_id:
         return ""
     for path in root.rglob(f"*{session_id}*.jsonl"):
         texts = []
         try:
             for line in path.read_text().splitlines()[:200]:
-                if not any(
-                    marker in line
-                    for marker in ('"role":"assistant"', '"type":"assistant"')
-                ):
+                if not any(marker in line for marker in markers):
                     continue
                 m = re.search(r'"text"\s*:\s*"((?:\\.|[^"\\]){8,240})"', line)
                 if m:
-                    part = _clip_snippet_part(
-                        bytes(m.group(1), "utf-8").decode("unicode_escape")
+                    raw = bytes(m.group(1), "utf-8").decode("unicode_escape")
+                    part = (
+                        user_snippet_from_text(raw, 240)
+                        if clip == "user"
+                        else _clip_snippet_part(raw)
                     )
                     if part:
                         texts.append(part)
-                if len(_join_snippet(texts)) >= 800:
+                if len(_join_snippet(texts, limit)) >= limit:
                     break
         except OSError:
             return ""
-        return _join_snippet(texts)
+        return _join_snippet(texts, limit)
     return ""
+
+
+def _codex_snippet(session_id: str) -> str:
+    return _codex_line_texts(
+        session_id, ('"role":"assistant"', '"type":"assistant"'), 800, "assistant"
+    )
+
+
+def _codex_user_snippet(session_id: str) -> str:
+    return _codex_line_texts(
+        session_id, ('"role":"user"', '"type":"user"'), 400, "user"
+    )
 
 
 def codex_export(cfg: dict) -> list[dict]:
@@ -552,6 +745,7 @@ def codex_export(cfg: dict) -> list[dict]:
                     "locale": locale,
                     "mmdd": mmdd(iso_to_ms(src) if isinstance(src, str) else src, cfg["timezone"]),
                     "snippet": _codex_snippet(sid),
+                    "userSnippet": _codex_user_snippet(sid),
                     "isArchived": bool(obj.get("archived")),
                 }
             )
@@ -600,6 +794,7 @@ def claude_export(cfg: dict) -> list[dict]:
         sid = path.stem
         created = updated = None
         snippet_parts = []
+        user_parts = []
         try:
             for i, line in enumerate(path.read_text().splitlines()):
                 if not line.strip():
@@ -610,17 +805,24 @@ def claude_export(cfg: dict) -> list[dict]:
                     updated = ts
                     if created is None:
                         created = ts
-                if obj.get("type") == "assistant" and len(_join_snippet(snippet_parts)) < 800:
-                    msg = obj.get("message") or {}
-                    content = msg.get("content")
-                    text = content if isinstance(content, str) else ""
-                    if isinstance(content, list):
-                        text = " ".join(
-                            c.get("text", "") for c in content if isinstance(c, dict)
-                        )
+                msg = obj.get("message") or {}
+                content = msg.get("content")
+                text = content if isinstance(content, str) else ""
+                if isinstance(content, list):
+                    text = " ".join(
+                        c.get("text", "")
+                        for c in content
+                        if isinstance(c, dict) and c.get("type") not in ("tool_result", "tool_use")
+                    )
+                kind = obj.get("type")
+                if kind == "assistant" and len(_join_snippet(snippet_parts)) < 800:
                     part = _clip_snippet_part(text)
                     if part:
                         snippet_parts.append(part)
+                elif kind == "user" and len(_join_snippet(user_parts, 400)) < 400:
+                    part = user_snippet_from_text(text, 200)
+                    if part:
+                        user_parts.append(part)
                 if i > 400:
                     break
         except (OSError, json.JSONDecodeError):
@@ -638,6 +840,7 @@ def claude_export(cfg: dict) -> list[dict]:
                     "locale": locale,
                     "mmdd": mmdd(iso_to_ms(src) if isinstance(src, str) else src, cfg["timezone"]),
                     "snippet": _join_snippet(snippet_parts),
+                    "userSnippet": _join_snippet(user_parts, 400),
                     "path": str(path),
                 }
             )
@@ -653,6 +856,42 @@ def claude_apply(items: list[dict]) -> int:
     op.parent.mkdir(parents=True, exist_ok=True)
     op.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     return len(items)
+
+
+def claude_current_title(session_id: str) -> str:
+    sid = (session_id or "").strip()
+    if not sid:
+        return ""
+    op = claude_override_path()
+    if not op.exists():
+        return ""
+    try:
+        data = json.loads(op.read_text())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    rec = data.get(sid)
+    if isinstance(rec, dict):
+        return (rec.get("title") or "").strip()
+    if isinstance(rec, str):
+        return rec.strip()
+    return ""
+
+
+def silent_stamp_claude(session_id: str) -> str | None:
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    title = claude_current_title(sid)
+    if not title:
+        return None
+    cfg = load_config()
+    locale = locale_of(cfg)
+    day = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%m%d")
+    new_title = wrap_clear_title(title, day, locale)
+    if not new_title:
+        return None
+    claude_apply([{"id": sid, "title": new_title}])
+    return new_title
 
 
 # --- Orca / Grok CLI -------------------------------------------------------
@@ -754,6 +993,7 @@ def orca_export(cfg: dict) -> list[dict]:
                     "locale": locale,
                     "mmdd": mmdd(iso_to_ms(src) if isinstance(src, str) else src, cfg["timezone"]),
                     "snippet": snippet or (sess.get("title") or "")[:200],
+                    "userSnippet": user_snippet_from_text(title or snippet, 400),
                     "path": file_path,
                 }
             )
