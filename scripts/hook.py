@@ -49,7 +49,16 @@ def session_id(event: dict) -> str:
             found = _id_from_mapping(obj)
             if found:
                 return found
-    return os.environ.get("CURSOR_CONVERSATION_ID") or os.environ.get("CODEX_THREAD_ID") or ""
+    return (
+        os.environ.get("GROK_SESSION_ID")
+        or os.environ.get("CURSOR_CONVERSATION_ID")
+        or os.environ.get("CODEX_THREAD_ID")
+        or ""
+    )
+
+
+def running_in_grok() -> bool:
+    return bool(os.environ.get("GROK_SESSION_ID") or os.environ.get("GROK_AGENT"))
 
 
 def load_ct():
@@ -73,6 +82,27 @@ def looks_like_cursor_event(event: dict) -> bool:
 
 def followup_text(locale: str, host: str = "cursor", ready_title: str = "") -> str:
     """Cursor expands the leading /tu into the full command rules; keep it short."""
+    if host in ("orca", "grok"):
+        if ready_title:
+            if locale == "en":
+                return (
+                    f"Apply title {ready_title!r} with "
+                    "scripts/chat_stamp.py apply --host orca. Title only."
+                )
+            return (
+                f"把本会话标题写成「{ready_title}」，"
+                "用 scripts/chat_stamp.py apply --host orca 写入。只改标题。"
+            )
+        if locale == "en":
+            return (
+                "Use the chat-stamp skill for this session only: read my messages and your "
+                "wrap-up (strip code), write MMDD | type | topic in English, then apply it "
+                "with scripts/chat_stamp.py apply --host orca. Title only."
+            )
+        return (
+            "用 chat-stamp skill 只给本会话起标题：看我发的消息和你的回复总结（去掉代码），"
+            "用中文写成 MMDD｜类型｜主题，再用 scripts/chat_stamp.py apply --host orca 写入。只改标题。"
+        )
     if ready_title:
         if host == "claude":
             if locale == "en":
@@ -144,7 +174,36 @@ def record_codex(sid: str) -> None:
         pass
 
 
+def handle_grok(event: dict) -> dict:
+    sid = (os.environ.get("GROK_SESSION_ID") or session_id(event) or "").strip()
+    if not sid:
+        log("grok noop no-id")
+        return {}
+    if event.get("stop_hook_active"):
+        return {}
+    try:
+        ct = load_ct()
+        written = ct.silent_stamp_grok(sid)
+        if written:
+            log(f"grok {sid} silent {written!r}")
+            return {}
+        if once_path("orca", sid).exists() or once_path("grok", sid).exists():
+            log(f"grok {sid} noop once")
+            return {}
+        if not mark_once("orca", sid):
+            return {}
+        locale = ct.locale_of(ct.load_config())
+        text = followup_text(locale, "orca")
+        log(f"grok {sid} followup")
+        return {"decision": "block", "reason": text}
+    except Exception as exc:
+        log(f"grok {sid} error {exc!r}")
+        return {}
+
+
 def handle(host: str, event: dict) -> dict:
+    if running_in_grok():
+        return handle_grok(event)
     sid = session_id(event)
     if host == "codex":
         record_codex(sid)

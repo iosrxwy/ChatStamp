@@ -35,3 +35,7 @@ Event: `SessionEnd`.
 ## Grok
 
 When Grok runs inside Cursor, use the Cursor hook.
+
+Grok TUI also loads `~/.claude/settings.json` Stop hooks. If `GROK_SESSION_ID` / `GROK_AGENT` is set, `hook.py` ignores `--host claude`: it never writes `chat-stamp-overrides.json` and never asks the model for `--host claude`. Clear Chinese titles wrap silently (pin `title_is_manual`, patch the Orca cache, `orca terminal rename` so the left project list updates). Unclear titles get one `block` followup that says `--host orca`.
+
+The Orca left sidebar reads tab `customTitle`, not Grok `generated_title`. `apply --host orca` must call `orca terminal rename`; writing `summary.json` alone does not change that list.

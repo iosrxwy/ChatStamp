@@ -6,7 +6,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -162,6 +164,8 @@ def save_config(data: dict) -> None:
 
 def detect_host() -> str:
     hint = os.environ.get("CHAT_STAMP_HOST") or os.environ.get("CURSOR_TRACE_ID")
+    if os.environ.get("GROK_SESSION_ID") or os.environ.get("GROK_AGENT"):
+        return "orca"
     if os.environ.get("ORCA_PANE_KEY") or os.environ.get("ORCA_AGENT_HOOK_ENV"):
         return "orca"
     if os.environ.get("CURSOR_TRACE_ID") or os.environ.get("CURSOR_PROJECT_DIR"):
@@ -913,16 +917,210 @@ def grok_summary_path(session_id: str) -> Path | None:
     return None
 
 
+def grok_current_title(session_id: str) -> str:
+    path = grok_summary_path(session_id)
+    if not path:
+        return ""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return (data.get("generated_title") or data.get("session_summary") or "").strip()
+
+
 def grok_set_title(session_id: str, title: str) -> bool:
     path = grok_summary_path(session_id)
     if not path:
         return False
     data = json.loads(path.read_text())
     data["generated_title"] = title
-    if data.get("session_summary"):
-        data["session_summary"] = title
+    data["session_summary"] = title
+    data["title_is_manual"] = True
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    db = HOME / ".grok" / "sessions" / "session_search.sqlite"
+    if db.exists():
+        try:
+            con = sqlite3.connect(str(db), timeout=SQLITE_WRITE_TIMEOUT)
+            con.execute(
+                "UPDATE session_docs SET title=? WHERE session_id=?",
+                (title, session_id),
+            )
+            con.commit()
+            con.close()
+        except sqlite3.Error:
+            pass
     return True
+
+
+def _strip_orca_tab_title(text: str) -> str:
+    t = (text or "").strip()
+    for suffix in (" - grok", " - Grok"):
+        if t.endswith(suffix):
+            t = t[: -len(suffix)].rstrip()
+    t = re.sub(r"^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]+\s*", "", t)
+    return t
+
+
+def _orca_tab_is_generic(text: str) -> bool:
+    t = _strip_orca_tab_title(text)
+    return not t or bool(re.fullmatch(r"(Grok|Terminal\s+\d+)", t, re.I))
+
+
+def orca_bin() -> str | None:
+    return shutil.which("orca") or shutil.which("orca-ide")
+
+
+def orca_list_terminals() -> list[dict]:
+    exe = orca_bin()
+    if not exe:
+        return []
+    try:
+        proc = subprocess.run(
+            [exe, "terminal", "list", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return []
+    result = data.get("result") if isinstance(data, dict) else None
+    if not isinstance(result, dict):
+        result = data if isinstance(data, dict) else {}
+    terms = result.get("terminals")
+    return terms if isinstance(terms, list) else []
+
+
+def orca_rename_terminal(handle: str, title: str) -> bool:
+    exe = orca_bin()
+    if not exe or not handle or not title:
+        return False
+    try:
+        proc = subprocess.run(
+            [exe, "terminal", "rename", "--terminal", handle, "--title", title, "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return True
+    return bool(data.get("ok", True))
+
+
+def orca_data_path() -> Path:
+    return HOME / "Library/Application Support/orca/profiles/local-default/orca-data.json"
+
+
+def orca_patch_tab_custom_title(old_title: str, new_title: str) -> int:
+    path = orca_data_path()
+    if not path.exists() or not new_title:
+        return 0
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return 0
+    tabs_by = ((data.get("workspaceSession") or {}).get("tabsByWorktree")) or {}
+    if not isinstance(tabs_by, dict):
+        return 0
+    n = 0
+    old_n = _strip_orca_tab_title(old_title) if old_title else ""
+    new_n = _strip_orca_tab_title(new_title)
+    for tabs in tabs_by.values():
+        if not isinstance(tabs, list):
+            continue
+        for tab in tabs:
+            if not isinstance(tab, dict):
+                continue
+            custom = tab.get("customTitle") or ""
+            shown = tab.get("title") or ""
+            candidates = {_strip_orca_tab_title(custom), _strip_orca_tab_title(shown)}
+            hit = new_n in candidates or (old_n and old_n in candidates)
+            if not hit:
+                continue
+            if tab.get("customTitle") != new_title:
+                tab["customTitle"] = new_title
+                n += 1
+    if n:
+        path.write_text(json.dumps(data, ensure_ascii=False) + "\n")
+    return n
+
+
+def orca_rename_session(session_id: str, title: str, old_title: str = "") -> int:
+    """Set the live Orca project-list title (customTitle) for this Grok session."""
+    n = 0
+    handles: list[str] = []
+    env_sid = (os.environ.get("GROK_SESSION_ID") or "").strip()
+    env_handle = (os.environ.get("ORCA_TERMINAL_HANDLE") or "").strip()
+    if env_handle and (not session_id or env_sid == session_id):
+        handles.append(env_handle)
+    old_n = _strip_orca_tab_title(old_title)
+    new_n = _strip_orca_tab_title(title)
+    for term in orca_list_terminals():
+        if not isinstance(term, dict):
+            continue
+        handle = term.get("handle") or ""
+        shown = term.get("title") or ""
+        if _orca_tab_is_generic(shown):
+            continue
+        shown_n = _strip_orca_tab_title(shown)
+        if shown_n == new_n or (old_n and shown_n == old_n):
+            if handle:
+                handles.append(handle)
+    seen = set()
+    for handle in handles:
+        if handle in seen:
+            continue
+        seen.add(handle)
+        if orca_rename_terminal(handle, title):
+            n += 1
+    n += orca_patch_tab_custom_title(old_title, title)
+    return n
+
+
+def silent_stamp_grok(session_id: str) -> str | None:
+    """Pin a wrapable Grok TUI title and push it to the Orca tab. Never writes Claude overrides."""
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+    path = grok_summary_path(sid)
+    if not path:
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    title = (data.get("generated_title") or data.get("session_summary") or "").strip()
+    if not title:
+        return None
+    cfg = load_config()
+    locale = locale_of(cfg)
+    src = data.get("updated_at") or data.get("created_at")
+    day = mmdd(iso_to_ms(src) if isinstance(src, str) else src, cfg["timezone"])
+    if not day:
+        day = datetime.now(ZoneInfo(cfg["timezone"])).strftime("%m%d")
+    if is_formatted(title, locale):
+        grok_set_title(sid, title)
+        orca_patch_cache({sid: title})
+        orca_rename_session(sid, title, old_title=title)
+        return title
+    new_title = wrap_clear_title(title, day, locale)
+    if not new_title:
+        return None
+    grok_set_title(sid, new_title)
+    orca_patch_cache({sid: new_title})
+    orca_rename_session(sid, new_title, old_title=title)
+    return new_title
 
 
 def orca_patch_cache(updates: dict[str, str]) -> int:
@@ -1007,15 +1205,16 @@ def orca_apply(items: list[dict]) -> int:
     for item in items:
         sid, title = item["id"], item["title"]
         engine = (item.get("engine") or "").lower()
-        wrote = False
-        if engine in ("cursor",):
-            wrote = cursor_apply([item]) > 0
-        elif engine in ("codex",):
-            wrote = codex_apply([item]) > 0
-        elif engine in ("claude",):
-            wrote = claude_apply([item]) > 0
-        elif engine in ("grok", "unknown", ""):
+        if engine == "cursor":
+            cursor_apply([item])
+        elif engine == "codex":
+            codex_apply([item])
+        elif engine == "claude":
+            claude_apply([item])
+        else:
+            old_title = grok_current_title(sid)
             grok_set_title(sid, title)
+            orca_rename_session(sid, title, old_title=old_title)
         updates[sid] = title
         if item.get("path"):
             updates[item["path"]] = title
@@ -1166,9 +1365,9 @@ def cmd_archive_empty(args) -> None:
 def cmd_current(args) -> None:
     cfg = load_config()
     host = args.host if args.host != "auto" else detect_host()
-    cid = args.id or os.environ.get("CURSOR_CONVERSATION_ID") or os.environ.get(
-        "CODEX_THREAD_ID"
-    )
+    cid = args.id or os.environ.get("GROK_SESSION_ID") or os.environ.get(
+        "CURSOR_CONVERSATION_ID"
+    ) or os.environ.get("CODEX_THREAD_ID")
     print(
         json.dumps(
             {"host": host, "id": cid, "dateSource": cfg.get("dateSource"), "config": cfg},

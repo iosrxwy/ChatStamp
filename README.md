@@ -263,7 +263,7 @@ python3 scripts/chat_stamp.py archive-empty --host auto
 | Cursor / Grok | `composerHeaders.name` + `composerData.name` + 搜索库 `title` |
 | Codex | `~/.codex/session_index.jsonl` 的 `thread_name` |
 | Claude Code | `~/.claude/chat-stamp-overrides.json`（侧栏是否立即显示取决于客户端） |
-| Orca | session cache + 对应引擎存储 |
+| Orca / Grok TUI | Grok `summary.json`（钉 `title_is_manual`）+ session cache + `orca terminal rename`（左边项目列表的 `customTitle`） |
 
 Cursor 对话库自动在 macOS（`~/Library/Application Support/Cursor`）、Linux（`~/.config/Cursor`）、Windows（`%APPDATA%\Cursor`）之间查找；路径特殊时设 `CURSOR_USER_DATA` 指向 Cursor 的用户数据目录。
 

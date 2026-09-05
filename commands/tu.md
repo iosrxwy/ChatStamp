@@ -7,7 +7,9 @@ description: 只改当前这条对话的标题。日期用最后更新时间（�
 
 只改**当前这一条**。`MMDD` 用这条对话的**最后更新时间**（时区默认 `Asia/Shanghai`）。
 
-然后 `rename_chat`：
+Cursor：`rename_chat`。Orca 里的 Grok 不要写 `--host claude`：用 `scripts/chat_stamp.py apply --host orca`（会钉标题并 `orca terminal rename` 改左边项目列表）。
+
+然后：
 
 1. 现成标题已经能看懂主题：只套成 `MMDD｜类型｜主题`。
 2. 标题看不懂或语言不符（例如中文用户遇到英文标题）：看我发的消息和你的回复总结，去掉代码和补丁。

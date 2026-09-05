@@ -10,7 +10,7 @@ argument-hint: /tu /tc /au /ac
 license: MIT
 metadata:
   author: iosrxwy
-  version: "1.5.0"
+  version: "1.6.0"
 ---
 
 # ChatStamp
@@ -84,14 +84,14 @@ More type tables: [references/title-rules.md](references/title-rules.md).
 | Cursor / Grok-in-Cursor | `composerHeaders` + `composerData` + search `title` |
 | Codex | `thread_name` in `session_index.jsonl` |
 | Claude Code | `~/.claude/chat-stamp-overrides.json` |
-| Orca | engine store + session cache |
+| Orca + Grok TUI | Grok `summary.json` (`title_is_manual`) + session cache + `orca terminal rename` (`customTitle`, left project list) |
 | Other IDEs | whatever that client uses after loading this skill |
 
 `--host auto|cursor|grok|codex|claude|orca`
 
 ## Hook
 
-`scripts/install.sh` merges a Cursor `stop` hook and a Claude `Stop` hook. Cursor cannot silently rename the live sidebar; the hook sends one short followup so the model can `rename_chat` (the finished title is included when the current name already wraps). Cursor also runs Claude Stop hooks; those are skipped when the id is a Cursor composer. Each conversation is followed up at most once (`~/.config/chat-stamp/once/{host}-{id}`). Codex SessionEnd only records an id. Existing Orca/rtk hooks are left as they are.
+`scripts/install.sh` merges a Cursor `stop` hook and a Claude `Stop` hook. Cursor cannot silently rename the live sidebar; the hook sends one short followup so the model can `rename_chat` (the finished title is included when the current name already wraps). Cursor also runs Claude Stop hooks; those are skipped when the id is a Cursor composer. Grok TUI also loads `~/.claude/settings.json` Stop hooks: if `GROK_SESSION_ID` is set, the hook never writes Claude overrides and never asks for `--host claude`. It silently wraps when it can, otherwise one followup with `--host orca` (that apply also runs `orca terminal rename`). Each conversation is followed up at most once (`~/.config/chat-stamp/once/{host}-{id}`). Codex SessionEnd only records an id. Existing Orca/rtk hooks are left as they are.
 
 ## Safety
 

@@ -7,7 +7,9 @@ description: Rename this chat only. Date = last updated (today if you are still 
 
 Rename **this chat only**. `MMDD` comes from this chat's **last-updated** time (timezone from config, default `Asia/Shanghai`).
 
-Then `rename_chat`:
+Cursor: `rename_chat`. Grok inside Orca: do not use `--host claude`. Apply with `scripts/chat_stamp.py apply --host orca` (pins the Grok title and runs `orca terminal rename` for the left project list).
+
+Then:
 
 1. If the current title already names the work, only wrap `MMDD | type | topic`.
 2. If the title is unclear or the wrong language, read my messages and your wrap-up. Strip code and patches.
